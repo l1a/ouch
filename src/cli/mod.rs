@@ -6,7 +6,6 @@ use std::path::{Path, PathBuf};
 
 use clap::{CommandFactory, Parser, error::ErrorKind};
 use clap_complete::generate;
-use fs_err as fs;
 use std::io;
 
 pub use self::args::{CliArgs, Subcommand};
