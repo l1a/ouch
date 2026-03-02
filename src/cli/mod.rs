@@ -2,20 +2,20 @@
 
 mod args;
 
-use std::{
-    io,
-    path::{Path, PathBuf},
-};
+use std::path::{Path, PathBuf};
 
-use clap::{error::ErrorKind, CommandFactory, Parser};
+use clap::{CommandFactory, Parser, error::ErrorKind};
 use clap_complete::generate;
 use fs_err as fs;
+use std::io;
 
 pub use self::args::{CliArgs, Subcommand};
 use crate::{
+    QuestionPolicy, Result,
     accessible::set_accessible,
-    utils::{is_path_stdin, logger::set_log_display_level, threads::set_thread_count, FileVisibilityPolicy},
-    QuestionPolicy,
+    utils::{
+        FileVisibilityPolicy, canonicalize, is_path_stdin, logger::set_log_display_level, threads::set_thread_count,
+    },
 };
 
 impl CliArgs {
@@ -24,7 +24,7 @@ impl CliArgs {
     /// And:
     ///   1. Make paths absolute.
     ///   2. Checks the QuestionPolicy.
-    pub fn parse_and_validate_args() -> crate::Result<(Self, QuestionPolicy, FileVisibilityPolicy)> {
+    pub fn parse_and_validate_args() -> Result<(Self, QuestionPolicy, FileVisibilityPolicy)> {
         let mut args = Self::parse();
 
         if let Some(shell) = args.completions {
@@ -36,8 +36,11 @@ impl CliArgs {
 
         if args.cmd.is_none() {
             let mut cmd = Self::command();
-            cmd.error(ErrorKind::MissingSubcommand, "A subcommand is required (compress, decompress, list)...")
-                .exit();
+            cmd.error(
+                ErrorKind::MissingSubcommand,
+                "A subcommand is required (compress, decompress, list)...",
+            )
+            .exit();
         }
 
         set_accessible(args.accessible);
@@ -70,14 +73,14 @@ impl CliArgs {
     }
 }
 
-fn canonicalize_files(files: &[impl AsRef<Path>]) -> io::Result<Vec<PathBuf>> {
+fn canonicalize_files(files: &[impl AsRef<Path>]) -> Result<Vec<PathBuf>> {
     files
         .iter()
         .map(|f| {
             if is_path_stdin(f.as_ref()) || f.as_ref().is_symlink() {
                 Ok(f.as_ref().to_path_buf())
             } else {
-                fs::canonicalize(f)
+                canonicalize(f)
             }
         })
         .collect()

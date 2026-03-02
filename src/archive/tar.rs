@@ -8,29 +8,30 @@ use std::{
     io::prelude::*,
     ops::Not,
     path::{Path, PathBuf},
-    sync::mpsc::{self, Receiver},
-    thread,
 };
 
 use fs_err::{self as fs};
 use same_file::Handle;
 
 use crate::{
-    commands::Unpacked,
+    Result,
     error::FinalError,
     info,
     list::FileInArchive,
-    utils::{self, create_symlink, set_permission_mode, Bytes, EscapedPathDisplay, FileVisibilityPolicy},
+    utils::{
+        self, BytesFmt, FileVisibilityPolicy, PathFmt, create_symlink, is_broken_symlink_error, is_same_file_as_output,
+        set_permission_mode,
+    },
     warning,
 };
 
 /// Unpacks the archive given by `archive` into the folder given by `into`.
 /// Assumes that output_folder is empty
-pub fn unpack_archive(reader: Box<dyn Read>, output_folder: &Path) -> crate::Result<Unpacked> {
+pub fn unpack_archive(reader: impl Read, output_folder: &Path) -> Result<u64> {
     let mut archive = tar::Archive::new(reader);
 
     let mut files_unpacked = 0;
-    let mut read_only_directories = Vec::new();
+    let mut read_only_dirs_and_modes = Vec::new();
 
     for file in archive.entries()? {
         let mut file = file?;
@@ -66,75 +67,56 @@ pub fn unpack_archive(reader: Box<dyn Read>, output_folder: &Path) -> crate::Res
                 file.unpack_in(output_folder)?;
 
                 if cfg!(unix) && is_writeable.not() {
-                    // We just unpacked a read-only directory
-                    // If any following entries are inside it (very likely), this would fail
-                    //
-                    // To get around that, we'll set this to writeable, then revert once finished
+                    // We unpacked a read-only directory, make it writeable so that we can
+                    // create the files inside of it, by the end, restore the original mode
                     let original_path = file.path()?.to_path_buf();
                     let unpacked = output_folder.join(&original_path);
                     set_permission_mode(&unpacked, original_mode | 0o200)?;
 
-                    read_only_directories.push((original_path, original_mode));
+                    read_only_dirs_and_modes.push((original_path, original_mode));
                 }
             }
             _ => continue,
         }
 
-        // This is printed for every file in the archive and has little
-        // importance for most users, but would generate lots of
-        // spoken text for users using screen readers, braille displays
-        // and so on
         info!(
             "extracted ({}) {:?}",
-            Bytes::new(file.size()),
-            utils::strip_cur_dir(&output_folder.join(file.path()?)),
+            BytesFmt(file.size()),
+            PathFmt(&output_folder.join(file.path()?)),
         );
         files_unpacked += 1;
     }
 
-    Ok(Unpacked {
-        files_unpacked,
-        read_only_directories,
-    })
-}
-
-/// List contents of `archive`, returning a vector of archive entries
-pub fn list_archive(
-    mut archive: tar::Archive<impl Read + Send + 'static>,
-) -> impl Iterator<Item = crate::Result<FileInArchive>> {
-    struct Files(Receiver<crate::Result<FileInArchive>>);
-    impl Iterator for Files {
-        type Item = crate::Result<FileInArchive>;
-
-        fn next(&mut self) -> Option<Self::Item> {
-            self.0.recv().ok()
+    // Restore original mode for read-only dirs we made writeable
+    if cfg!(unix) {
+        for (path, mode) in &read_only_dirs_and_modes {
+            set_permission_mode(path, *mode)?;
         }
     }
 
-    let (tx, rx) = mpsc::channel();
-    thread::spawn(move || {
-        for file in archive.entries().expect("entries is only used once") {
-            let file_in_archive = (|| {
-                let file = file?;
-                let path = file.path()?.into_owned();
-                let is_dir = file.header().entry_type().is_dir();
-                Ok(FileInArchive { path, is_dir })
-            })();
-            tx.send(file_in_archive).unwrap();
-        }
+    Ok(files_unpacked)
+}
+
+/// List contents of `archive`, returning a vector of archive entries
+pub fn list_archive(mut archive: tar::Archive<impl Read>) -> Result<impl Iterator<Item = Result<FileInArchive>>> {
+    let entries = archive.entries()?.map(|file| {
+        let file = file?;
+        let path = file.path()?.into_owned();
+        let is_dir = file.header().entry_type().is_dir();
+        Ok(FileInArchive { path, is_dir })
     });
 
-    Files(rx)
+    Ok(entries.collect::<Vec<_>>().into_iter())
 }
 
 /// Compresses the archives given by `input_filenames` into the file given previously to `writer`.
-pub fn build_archive_from_paths<W>(
+pub fn build_archive<W>(
     input_filenames: &[PathBuf],
     output_path: &Path,
     writer: W,
     file_visibility_policy: FileVisibilityPolicy,
     follow_symlinks: bool,
-) -> crate::Result<W>
+) -> Result<W>
 where
     W: Write,
 {
@@ -153,20 +135,15 @@ where
             let entry = entry?;
             let path = entry.path();
 
-            // If the output_path is the same as the input file, warn the user and skip the input (in order to avoid compression recursion)
-            if let Ok(handle) = &output_handle {
-                if matches!(Handle::from_path(path), Ok(x) if &x == handle) {
-                    warning!("Cannot compress `{}` into itself, skipping", output_path.display());
-
+            // Avoid compressing the output file into itself
+            if let Ok(handle) = output_handle.as_ref() {
+                if is_same_file_as_output(path, handle) {
+                    warning!("Cannot compress {:?} into itself, skipping", PathFmt(output_path));
                     continue;
                 }
             }
 
-            // This is printed for every file in `input_filenames` and has
-            // little importance for most users, but would generate lots of
-            // spoken text for users using screen readers, braille displays
-            // and so on
-            info!("Compressing '{}'", EscapedPathDisplay::new(path));
+            info!("Compressing {:?}", PathFmt(path));
 
             let link_meta = path.symlink_metadata()?;
 
@@ -180,7 +157,7 @@ where
                 builder.append_link(&mut header, path, &target_path).map_err(|err| {
                     FinalError::with_title("Could not create archive")
                         .detail("Unexpected error while trying to read link")
-                        .detail(format!("Error: {err}."))
+                        .detail(format!("Error: {err}"))
                 })?;
                 continue;
             }
@@ -199,11 +176,8 @@ where
                         header.set_size(0);
 
                         builder.append_link(&mut header, path, target_path).map_err(|err| {
-                            FinalError::with_title("Could not create archive").detail(format!(
-                                "Error appending hard link '{}': {}",
-                                path.display(),
-                                err
-                            ))
+                            FinalError::with_title("Could not create archive")
+                                .detail(format!("Error appending hard link {:?}: {err}", PathFmt(path)))
                         })?;
                     }
                     None => {
@@ -222,18 +196,13 @@ where
 
             let mut file = match fs::File::open(path) {
                 Ok(f) => f,
-                Err(e) => {
-                    if e.kind() == std::io::ErrorKind::NotFound && path.is_symlink() {
-                        // This path is for a broken symlink, ignore it
-                        continue;
-                    }
-                    return Err(e.into());
-                }
+                Err(e) if is_broken_symlink_error(&e, path) => continue,
+                Err(e) => return Err(e.into()),
             };
             builder.append_file(path, file.file_mut()).map_err(|err| {
                 FinalError::with_title("Could not create archive")
                     .detail("Unexpected error while trying to read file")
-                    .detail(format!("Error: {err}."))
+                    .detail(format!("Error: {err}"))
             })?;
         }
         env::set_current_dir(previous_location)?;

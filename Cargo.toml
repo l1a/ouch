@@ -5,8 +5,8 @@ authors = [
     "João Marcos <marcospb19@hotmail.com>",
     "Vinícius Rodrigues Miguel <vrmiguel99@gmail.com>",
 ]
-edition = "2021"
-rust-version = "1.82.0"
+edition = "2024"
+rust-version = "1.85.0"
 readme = "README.md"
 repository = "https://github.com/ouch-org/ouch"
 license = "MIT"
@@ -79,7 +79,6 @@ test-strategy = "0.4.0"
 default = ["unrar", "use_zlib", "use_zstd_thin", "bzip3"]
 use_zlib = ["flate2/zlib", "gzp/deflate_zlib", "zip/deflate-flate2-zlib"]
 use_zstd_thin = ["zstd/thin"]
-allow_piped_choice = []
 
 # For generating binaries for releases
 [profile.release]
@@ -96,3 +95,7 @@ opt-level = 2
 incremental = true
 codegen-units = 32
 strip = false
+
+[lints.clippy]
+type_complexity = "allow"
+too_many_arguments = "allow"

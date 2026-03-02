@@ -39,7 +39,7 @@ pub struct CliArgs {
 
     /// Specify the format of the archive
     #[arg(short, long, global = true)]
-    pub format: Option<OsString>,
+    pub format: Option<String>,
 
     /// Decompress or list with password
     #[arg(short, long = "password", aliases = ["pass", "pw"], global = true)]
@@ -97,7 +97,7 @@ pub enum Subcommand {
         #[arg(required = true, num_args = 1.., value_hint = ValueHint::FilePath)]
         files: Vec<PathBuf>,
 
-        /// Place results in a directory other than the current one
+        /// Decompress inside OUTPUT_DIR instead of current directory
         #[arg(short = 'd', long = "dir", value_hint = ValueHint::FilePath)]
         output_dir: Option<PathBuf>,
 

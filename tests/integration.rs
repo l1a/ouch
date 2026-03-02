@@ -14,11 +14,10 @@ use memchr::memmem;
 use parse_display::Display;
 use pretty_assertions::assert_eq;
 use proptest::sample::size_range;
-use rand::{rngs::SmallRng, Rng, SeedableRng};
-use tempfile::tempdir;
-use test_strategy::{proptest, Arbitrary};
+use rand::{Rng, SeedableRng, rngs::SmallRng};
+use test_strategy::{Arbitrary, proptest};
 
-use crate::utils::{assert_same_directory, write_random_content};
+use crate::utils::{assert_same_directory, testdir, write_random_content};
 
 /// tar and zip extensions
 #[derive(Arbitrary, Clone, Copy, Debug, Display)]
@@ -97,7 +96,6 @@ fn create_random_files(dir: impl Into<PathBuf>, depth: u8, rng: &mut SmallRng) {
 }
 
 /// Create n random files on directory dir
-#[cfg_attr(not(feature = "allow_piped_choice"), allow(dead_code))]
 fn create_n_random_files(n: usize, dir: impl Into<PathBuf>, rng: &mut SmallRng) {
     let dir: &PathBuf = &dir.into();
 
@@ -118,8 +116,7 @@ fn create_n_random_files(n: usize, dir: impl Into<PathBuf>, rng: &mut SmallRng) 
 /// Compress and decompress a single empty file
 #[proptest(cases = 200)]
 fn single_empty_file(ext: Extension, #[any(size_range(0..8).lift())] exts: Vec<FileExtension>) {
-    let dir = tempdir().unwrap();
-    let dir = dir.path();
+    let (_tempdir, dir) = testdir().unwrap();
     let before = &dir.join("before");
     fs::create_dir(before).unwrap();
     let before_file = &before.join("file");
@@ -141,8 +138,7 @@ fn single_file(
     #[cfg_attr(target_arch = "arm", strategy(proptest::option::of(0i16..6)))]
     level: Option<i16>,
 ) {
-    let dir = tempdir().unwrap();
-    let dir = dir.path();
+    let (_tempdir, dir) = testdir().unwrap();
     let before = &dir.join("before");
     fs::create_dir(before).unwrap();
     let before_file = &before.join("file");
@@ -171,8 +167,7 @@ fn single_file_stdin(
     #[cfg_attr(target_arch = "arm", strategy(proptest::option::of(0i16..6)))]
     level: Option<i16>,
 ) {
-    let dir = tempdir().unwrap();
-    let dir = dir.path();
+    let (_tempdir, dir) = testdir().unwrap();
     let before = &dir.join("before");
     fs::create_dir(before).unwrap();
     let before_file = &before.join("file");
@@ -197,9 +192,9 @@ fn single_file_stdin(
 
     match ext {
         Extension::Directory(_) => {}
-        // We don't know the original filename, so we create a file named stdin-output
+        // Ouch writes to `ouch-output` when the input is stdin
         // Change the top-level "before" directory to match
-        Extension::File(_) => fs::rename(before_file, before_file.with_file_name("stdin-output")).unwrap(),
+        Extension::File(_) => fs::rename(before_file, before_file.with_file_name("ouch-output")).unwrap(),
     };
 
     assert_same_directory(before, after, false);
@@ -212,8 +207,7 @@ fn multiple_files(
     #[any(size_range(0..1).lift())] extra_extensions: Vec<FileExtension>,
     #[strategy(0u8..3)] depth: u8,
 ) {
-    let dir = tempdir().unwrap();
-    let dir = dir.path();
+    let (_tempdir, dir) = testdir().unwrap();
     let before = &dir.join("before");
     let before_dir = &before.join("dir");
     fs::create_dir_all(before_dir).unwrap();
@@ -231,8 +225,7 @@ fn multiple_files_with_conflict_and_choice_to_overwrite(
     #[any(size_range(0..1).lift())] extra_extensions: Vec<FileExtension>,
     #[strategy(0u8..3)] depth: u8,
 ) {
-    let dir = tempdir().unwrap();
-    let dir = dir.path();
+    let (_tempdir, dir) = testdir().unwrap();
 
     let before = &dir.join("before");
     let before_dir = &before.join("dir");
@@ -265,8 +258,7 @@ fn multiple_files_with_conflict_and_choice_to_not_overwrite(
     #[any(size_range(0..1).lift())] extra_extensions: Vec<FileExtension>,
     #[strategy(0u8..3)] depth: u8,
 ) {
-    let dir = tempdir().unwrap();
-    let dir = dir.path();
+    let (_tempdir, dir) = testdir().unwrap();
 
     let before = &dir.join("before");
     let before_dir = &before.join("dir");
@@ -300,14 +292,12 @@ fn multiple_files_with_conflict_and_choice_to_not_overwrite(
     assert_same_directory(after, after_backup, false);
 }
 
-#[cfg(feature = "allow_piped_choice")]
 #[proptest(cases = 25)]
 fn multiple_files_with_conflict_and_choice_to_rename(
     ext: DirectoryExtension,
     #[any(size_range(0..1).lift())] extra_extensions: Vec<FileExtension>,
 ) {
-    let temp_dir = tempdir().unwrap();
-    let root_path = temp_dir.path();
+    let (_tempdir, root_path) = testdir().unwrap();
 
     let src_files_path = root_path.join("src_files");
     fs::create_dir_all(&src_files_path).unwrap();
@@ -318,7 +308,7 @@ fn multiple_files_with_conflict_and_choice_to_rename(
     fs::create_dir_all(&dest_files_path).unwrap();
     create_n_random_files(5, &dest_files_path, &mut SmallRng::from_entropy());
 
-    let archive = &root_path.join(format!("archive.{}", merge_extensions(&ext, &extra_extensions)));
+    let archive = &root_path.join(format!("archive.{}", merge_extensions(ext, &extra_extensions)));
     ouch!("-A", "c", &src_files_path, archive);
 
     let dest_files_path_renamed = &root_path.join("dest_files_1");
@@ -336,14 +326,12 @@ fn multiple_files_with_conflict_and_choice_to_rename(
     assert_same_directory(src_files_path, dest_files_path_renamed.join("src_files"), false);
 }
 
-#[cfg(feature = "allow_piped_choice")]
 #[proptest(cases = 25)]
 fn multiple_files_with_conflict_and_choice_to_rename_with_already_a_renamed(
     ext: DirectoryExtension,
     #[any(size_range(0..1).lift())] extra_extensions: Vec<FileExtension>,
 ) {
-    let temp_dir = tempdir().unwrap();
-    let root_path = temp_dir.path();
+    let (_tempdir, root_path) = testdir().unwrap();
 
     let src_files_path = root_path.join("src_files");
     fs::create_dir_all(&src_files_path).unwrap();
@@ -358,7 +346,7 @@ fn multiple_files_with_conflict_and_choice_to_rename_with_already_a_renamed(
     fs::create_dir_all(&dest_files_path_1).unwrap();
     create_n_random_files(5, &dest_files_path_1, &mut SmallRng::from_entropy());
 
-    let archive = &root_path.join(format!("archive.{}", merge_extensions(&ext, &extra_extensions)));
+    let archive = &root_path.join(format!("archive.{}", merge_extensions(ext, &extra_extensions)));
     ouch!("-A", "c", &src_files_path, archive);
 
     let dest_files_path_renamed = &root_path.join("dest_files_2");
@@ -376,56 +364,11 @@ fn multiple_files_with_conflict_and_choice_to_rename_with_already_a_renamed(
     assert_same_directory(src_files_path, dest_files_path_renamed.join("src_files"), false);
 }
 
-#[proptest(cases = 25)]
-fn multiple_files_with_disabled_smart_unpack_by_dir(
-    ext: DirectoryExtension,
-    #[any(size_range(0..1).lift())] extra_extensions: Vec<FileExtension>,
-) {
-    let temp_dir = tempdir().unwrap();
-    let root_path = temp_dir.path();
-
-    let src_files_path = root_path.join("src_files");
-    fs::create_dir_all(&src_files_path).unwrap();
-
-    let files_path = ["file1.txt", "file2.txt", "file3.txt", "file4.txt", "file5.txt"]
-        .into_iter()
-        .map(|f| src_files_path.join(f))
-        .inspect(|path| {
-            let mut file = fs::File::create(path).unwrap();
-            file.write_all("Some content".as_bytes()).unwrap();
-        })
-        .collect::<Vec<_>>();
-
-    let dest_files_path = root_path.join("dest_files");
-    fs::create_dir_all(&dest_files_path).unwrap();
-
-    let archive = &root_path.join(format!("archive.{}", merge_extensions(ext, &extra_extensions)));
-
-    crate::utils::cargo_bin()
-        .arg("compress")
-        .args(files_path)
-        .arg(archive)
-        .assert()
-        .success();
-
-    crate::utils::cargo_bin()
-        .arg("decompress")
-        .arg(archive)
-        .arg("-d")
-        .arg(&dest_files_path)
-        .write_stdin("r")
-        .assert()
-        .success();
-
-    assert_same_directory(src_files_path, dest_files_path, false);
-}
-
 #[cfg(feature = "unrar")]
 #[test]
 fn unpack_rar() -> Result<(), Box<dyn std::error::Error>> {
     fn test_unpack_rar_single(input: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
-        let dir = tempdir()?;
-        let dirpath = dir.path();
+        let (_tempdir, dirpath) = testdir()?;
         let unpacked_path = &dirpath.join("testfile.txt");
         ouch!("-A", "d", input, "-d", dirpath);
         let content = fs::read_to_string(unpacked_path)?;
@@ -447,8 +390,7 @@ fn unpack_rar() -> Result<(), Box<dyn std::error::Error>> {
 #[test]
 fn unpack_rar_stdin() -> Result<(), Box<dyn std::error::Error>> {
     fn test_unpack_rar_single(input: &std::path::Path, format: &str) -> Result<(), Box<dyn std::error::Error>> {
-        let dir = tempdir()?;
-        let dirpath = dir.path();
+        let (_tempdir, dirpath) = testdir()?;
         let unpacked_path = &dirpath.join("testfile.txt");
         crate::utils::cargo_bin()
             .args([
@@ -490,8 +432,7 @@ fn symlink_pack_and_unpack(
         return Ok(());
     }
 
-    let temp_dir = tempdir()?;
-    let root_path = temp_dir.path();
+    let (_tempdir, root_path) = testdir()?;
 
     let src_files_path = root_path.join("src_files");
     let folder_path = src_files_path.join("folder");
@@ -577,8 +518,7 @@ fn symlink_pack_and_unpack(
 fn no_git_folder_after_decompression_with_gitignore_flag_active() {
     use std::process::Command;
 
-    let dir = tempdir().unwrap();
-    let dir_path = dir.path();
+    let (_tempdir, dir_path) = testdir().unwrap();
 
     let before = dir_path.join("before");
 
@@ -623,8 +563,7 @@ fn enable_gitignore_flag_should_work_without_git(
     ext: DirectoryExtension,
     #[any(size_range(0..1).lift())] extra_extensions: Vec<FileExtension>,
 ) {
-    let temp_dir = tempdir()?;
-    let root_path = temp_dir.path();
+    let (_tempdir, root_path) = testdir()?;
     let source_path = root_path.join(format!("in_{}", merge_extensions(ext, &extra_extensions)));
     fs::create_dir_all(&source_path)?;
     let out_path = root_path.join(format!("out_{}", merge_extensions(ext, &extra_extensions)));
@@ -668,22 +607,20 @@ fn enable_gitignore_flag_should_work_without_git(
     );
 }
 
-#[cfg(feature = "allow_piped_choice")]
 #[proptest(cases = 25)]
 fn unpack_multiple_sources_into_the_same_destination_with_merge(
     ext: DirectoryExtension,
     #[any(size_range(0..1).lift())] extra_extensions: Vec<FileExtension>,
 ) {
-    let temp_dir = tempdir()?;
-    let root_path = temp_dir.path();
+    let (_tempdir, root_path) = testdir()?;
     let source_path = root_path
-        .join(format!("example_{}", merge_extensions(&ext, &extra_extensions)))
+        .join(format!("example_{}", merge_extensions(ext, &extra_extensions)))
         .join("sub_a")
         .join("sub_b")
         .join("sub_c");
 
     fs::create_dir_all(&source_path)?;
-    let archive = root_path.join(format!("archive.{}", merge_extensions(&ext, &extra_extensions)));
+    let archive = root_path.join(format!("archive.{}", merge_extensions(ext, &extra_extensions)));
     crate::utils::cargo_bin()
         .arg("compress")
         .args([
@@ -697,7 +634,7 @@ fn unpack_multiple_sources_into_the_same_destination_with_merge(
 
     fs::remove_dir_all(&source_path)?;
     fs::create_dir_all(&source_path)?;
-    let archive1 = root_path.join(format!("archive1.{}", merge_extensions(&ext, &extra_extensions)));
+    let archive1 = root_path.join(format!("archive1.{}", merge_extensions(ext, &extra_extensions)));
     crate::utils::cargo_bin()
         .arg("compress")
         .args([
@@ -709,7 +646,7 @@ fn unpack_multiple_sources_into_the_same_destination_with_merge(
         .assert()
         .success();
 
-    let out_path = root_path.join(format!("out_{}", merge_extensions(&ext, &extra_extensions)));
+    let out_path = root_path.join(format!("out_{}", merge_extensions(ext, &extra_extensions)));
     fs::create_dir_all(&out_path)?;
 
     crate::utils::cargo_bin()
@@ -737,8 +674,8 @@ fn reading_nested_archives_with_two_archive_extensions_adjacent() {
     let archive_formats = ["tar", "zip", "7z"].into_iter();
 
     for (first_archive, second_archive) in archive_formats.clone().cartesian_product(archive_formats.rev()) {
-        let temp_dir = tempdir().unwrap();
-        let in_dir = |path: &str| format!("{}/{}", temp_dir.path().display(), path);
+        let (_tempdir, dir) = testdir().unwrap();
+        let in_dir = |path: &str| format!("{}/{}", dir.display(), path);
 
         fs::write(in_dir("a.txt"), "contents").unwrap();
 
@@ -783,8 +720,8 @@ fn reading_nested_archives_with_two_archive_extensions_interleaved() {
     let archive_formats = ["tar", "zip", "7z"].into_iter();
 
     for (first_archive, second_archive) in archive_formats.clone().cartesian_product(archive_formats.rev()) {
-        let temp_dir = tempdir().unwrap();
-        let in_dir = |path: &str| format!("{}/{}", temp_dir.path().display(), path);
+        let (_tempdir, dir) = testdir().unwrap();
+        let in_dir = |path: &str| format!("{}/{}", dir.display(), path);
 
         fs::write(in_dir("a.txt"), "contents").unwrap();
 
@@ -831,8 +768,8 @@ fn compressing_archive_with_two_archive_formats() {
     let archive_formats = ["tar", "zip", "7z"].into_iter();
 
     for (first_archive, second_archive) in archive_formats.clone().cartesian_product(archive_formats.rev()) {
-        let temp_dir = tempdir().unwrap();
-        let dir = temp_dir.path().display().to_string();
+        let (_tempdir, dir_path) = testdir().unwrap();
+        let dir = dir_path.display().to_string();
 
         let output = crate::utils::cargo_bin()
             .args([
@@ -864,11 +801,13 @@ fn compressing_archive_with_two_archive_formats() {
             .clone();
 
         let stderr = output.stderr.to_str().unwrap();
-        assert!(memmem::find(
-            stderr.as_bytes(),
-            b"can only be used at the start of the file extension",
-        )
-        .is_some());
+        assert!(
+            memmem::find(
+                stderr.as_bytes(),
+                b"can only be used at the start of the file extension",
+            )
+            .is_some()
+        );
 
         crate::utils::cargo_bin()
             .args([
@@ -887,8 +826,8 @@ fn compressing_archive_with_two_archive_formats() {
 #[test]
 fn fail_when_compressing_archive_as_the_second_extension() {
     for archive_format in ["tar", "zip", "7z"] {
-        let temp_dir = tempdir().unwrap();
-        let dir = temp_dir.path().display().to_string();
+        let (_tempdir, dir_path) = testdir().unwrap();
+        let dir = dir_path.display().to_string();
 
         let output = crate::utils::cargo_bin()
             .args([
@@ -920,18 +859,19 @@ fn fail_when_compressing_archive_as_the_second_extension() {
             .clone();
 
         let stderr = output.stderr.to_str().unwrap();
-        assert!(memmem::find(
-            stderr.as_bytes(),
-            format!("'{archive_format}' can only be used at the start of the file extension").as_bytes(),
-        )
-        .is_some());
+        assert!(
+            memmem::find(
+                stderr.as_bytes(),
+                format!("'{archive_format}' can only be used at the start of the file extension").as_bytes(),
+            )
+            .is_some()
+        );
     }
 }
 
 #[test]
 fn sevenz_list_should_not_failed() {
-    let temp_dir = tempdir().unwrap();
-    let root_path = temp_dir.path();
+    let (_tempdir, root_path) = testdir().unwrap();
     let src_files_path = root_path.join("src_files");
     fs::create_dir_all(&src_files_path).unwrap();
 
@@ -962,8 +902,7 @@ fn sevenz_list_should_not_failed() {
 fn tar_hardlink_pack_and_unpack() {
     use std::{fs::hard_link, os::unix::fs::MetadataExt};
 
-    let temp_dir = tempdir().unwrap();
-    let root_path = temp_dir.path();
+    let (_tempdir, root_path) = testdir().unwrap();
     let source_path = root_path.join("hardlink");
     fs::create_dir_all(&source_path).unwrap();
     let out_path = root_path.join("out");
@@ -1013,4 +952,203 @@ fn tar_hardlink_pack_and_unpack() {
 
     assert_eq!(out_source_meta.ino(), out_link1_meta.ino());
     assert_eq!(out_link1_meta.ino(), out_link2_meta.ino());
+}
+
+#[test]
+fn compress_with_rename_conflict() {
+    let (_tempdir, root_path) = testdir().unwrap();
+
+    let file_path = root_path.join("file.txt");
+    fs::write(&file_path, "content").unwrap();
+
+    let archive = root_path.join("archive.tar.gz");
+
+    for _ in 0..3 {
+        crate::utils::cargo_bin()
+            .arg("compress")
+            .arg(&file_path)
+            .arg(&archive)
+            .write_stdin("r\n")
+            .assert()
+            .success();
+    }
+
+    assert!(root_path.join("archive.tar.gz").exists());
+    assert!(root_path.join("archive_1.tar.gz").exists());
+    assert!(root_path.join("archive_2.tar.gz").exists());
+}
+
+#[test]
+fn decompress_with_mismatched_extension_should_use_detected_format() {
+    let (_tempdir, test_dir) = testdir().unwrap();
+
+    let original_file = test_dir.join("input.txt");
+    fs::write(&original_file, "Hello, world!").unwrap();
+
+    let gzip_archive = test_dir.join("archive.gz");
+    let misnamed_archive = test_dir.join("archive.zst");
+
+    crate::utils::cargo_bin()
+        .arg("compress")
+        .arg(&original_file)
+        .arg(&gzip_archive)
+        .assert()
+        .success();
+
+    // Rename the .gz file to have a .zst extension (wrong extension)
+    fs::rename(&gzip_archive, &misnamed_archive).unwrap();
+
+    let output_dir = test_dir.join("output");
+    fs::create_dir(&output_dir).unwrap();
+
+    let output = crate::utils::cargo_bin()
+        .arg("decompress")
+        .arg(misnamed_archive)
+        .arg("--dir")
+        .arg(output_dir)
+        .assert()
+        .failure()
+        .get_output()
+        .clone();
+
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(stderr.contains("Format mismatch"), "Expected format mismatch error");
+    assert!(stderr.contains("--format"), "Expected hint about --format flag");
+}
+
+#[proptest(cases = 10)]
+fn decompress_with_unknown_extension_should_detect_format_and_ask(
+    ext: FileExtension,
+    contains_extension_in_filename: bool,
+) {
+    let (_tempdir, test_dir) = testdir()?;
+
+    // Brotli has no magic bytes
+    if let FileExtension::Br = ext {
+        return Ok(());
+    }
+
+    let original_file = test_dir.join("input.txt");
+    let original_content = "Hello, world!";
+    fs::write(&original_file, original_content)?;
+
+    let compressed_archive = test_dir.join(format!("file.{ext}"));
+
+    crate::utils::cargo_bin()
+        .arg("compress")
+        .arg(&original_file)
+        .arg(&compressed_archive)
+        .assert()
+        .success();
+
+    let erased_ext_filename = if contains_extension_in_filename {
+        "file.unknown"
+    } else {
+        "file"
+    };
+    let unknown_path = test_dir.join(erased_ext_filename);
+    // Rename to have an unknown extension (no recognized format)
+    fs::rename(&compressed_archive, &unknown_path)?;
+
+    let output_dir = test_dir.join("output");
+    fs::create_dir(&output_dir)?;
+
+    crate::utils::cargo_bin()
+        .arg("decompress")
+        .arg(&unknown_path)
+        .arg("--dir")
+        .arg(&output_dir)
+        .write_stdin("y\n")
+        .assert()
+        .success();
+
+    // Ouch adds this suffix so it doesn't conflict with other stuff
+    let decompressed_file = output_dir.join("file-output");
+    let decompressed_content = fs::read_to_string(&decompressed_file)?;
+    assert_eq!(decompressed_content, original_content);
+}
+
+/// Helper function to test decompression of concatenated streams (issue #855).
+/// Takes a file extension and a compression function that compresses a single chunk.
+fn test_concatenated_streams(extension: &str, compress_chunk: impl Fn(&[u8]) -> Vec<u8>) {
+    use std::io::Write;
+
+    let (_tempdir, root_path) = testdir().unwrap();
+
+    // Create content for three separate streams
+    let chunks: &[&[u8]] = &[
+        b"First stream content - this is stream 1\n",
+        b"Second stream content - this is stream 2\n",
+        b"Third stream content - this is stream 3\n",
+    ];
+
+    // Create the concatenated file
+    let concatenated_path = root_path.join(format!("concatenated.{extension}"));
+    {
+        let mut file = fs::File::create(&concatenated_path).unwrap();
+        for chunk in chunks {
+            file.write_all(&compress_chunk(chunk)).unwrap();
+        }
+    }
+
+    // Decompress using ouch
+    crate::utils::cargo_bin()
+        .arg("decompress")
+        .arg(&concatenated_path)
+        .arg("-d")
+        .arg(root_path)
+        .arg("--yes")
+        .assert()
+        .success();
+
+    // Verify the output contains all streams
+    let output_path = root_path.join("concatenated");
+    let output_content = fs::read(&output_path).unwrap();
+    let expected_content: Vec<u8> = chunks.iter().flat_map(|c| c.iter().copied()).collect();
+    assert_eq!(
+        output_content, expected_content,
+        "Decompressed content should contain all concatenated {extension} streams"
+    );
+}
+
+/// Test that concatenated gzip streams are fully decompressed (issue #855)
+#[test]
+fn decompress_concatenated_gzip_streams() {
+    use std::io::Write;
+
+    use flate2::{Compression, write::GzEncoder};
+
+    test_concatenated_streams("gz", |data| {
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+        encoder.write_all(data).unwrap();
+        encoder.finish().unwrap()
+    });
+}
+
+/// Test that concatenated bzip2 streams are fully decompressed (related to issue #855)
+#[test]
+fn decompress_concatenated_bzip2_streams() {
+    use std::io::Write;
+
+    use bzip2::{Compression, write::BzEncoder};
+
+    test_concatenated_streams("bz2", |data| {
+        let mut encoder = BzEncoder::new(Vec::new(), Compression::default());
+        encoder.write_all(data).unwrap();
+        encoder.finish().unwrap()
+    });
+}
+
+/// Test that concatenated lz4 frames are fully decompressed (related to issue #855)
+#[test]
+fn decompress_concatenated_lz4_frames() {
+    use std::io::Write;
+
+    use lz4_flex::frame::FrameEncoder;
+
+    test_concatenated_streams("lz4", |data| {
+        let mut encoder = FrameEncoder::new(Vec::new());
+        encoder.write_all(data).unwrap();
+        encoder.finish().unwrap()
+    });
 }
